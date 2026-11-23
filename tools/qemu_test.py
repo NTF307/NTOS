@@ -144,6 +144,10 @@ def main():
                 qmp.mouse_move(dx, dy)
                 time.sleep(0.3)
             for line in args.type:
+                if line == '^C':                       # Ctrl+C, no Enter
+                    qmp.cmd('send-key', keys=[{'type': 'qcode', 'data': 'ctrl'}, {'type': 'qcode', 'data': 'c'}])
+                    time.sleep(0.6)
+                    continue
                 for ch in line:
                     qmp.key(ch)
                 qmp.key('\n')

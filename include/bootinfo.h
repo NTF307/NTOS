@@ -55,6 +55,8 @@ typedef struct {
     uint64_t         kernel_size;   /* bytes, page aligned */
     uint64_t         hhdm_base;     /* virtual = physical + hhdm_base */
     uint64_t         rsdp;          /* physical address of ACPI RSDP, 0 if none */
+    uint64_t         initrd_phys;   /* \NTOS\INITRD.TAR (ustar archive), 0 if absent */
+    uint64_t         initrd_size;   /* bytes */
     uint64_t         mem_count;
     ntos_mem_region  mem[NTOS_MAX_MEM_REGIONS];
 } ntos_boot_info;

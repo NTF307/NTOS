@@ -12,6 +12,7 @@
 
 #define PAGE_SIZE    4096ULL
 #define KERNEL_PATH  u"\\NTOS\\KERNEL.ELF"
+#define INITRD_PATH  u"\\NTOS\\INITRD.TAR"
 #define MAX_FB_W     1920
 #define MAX_FB_H     1080
 #define STACK_PAGES  16
@@ -323,6 +324,22 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
         EFI_CONFIGURATION_TABLE *t = &ST->ConfigurationTable[i];
         if (guid_eq(&t->VendorGuid, &acpi2)) { bi->rsdp = (uint64_t)t->VendorTable; break; }
         if (guid_eq(&t->VendorGuid, &acpi1)) bi->rsdp = (uint64_t)t->VendorTable;
+    }
+
+    /* ---- initial ramdisk (optional): user programs */
+    void *rd; UINTN rd_size;
+    if (!EFI_ERROR(load_file(image, INITRD_PATH, &rd, &rd_size)) && rd_size) {
+        EFI_PHYSICAL_ADDRESS rd_phys;
+        UINTN rd_pages = (rd_size + PAGE_SIZE - 1) / PAGE_SIZE;
+        if (!EFI_ERROR(BS->AllocatePages(AllocateAnyPages, EfiLoaderData, rd_pages, &rd_phys))) {
+            memcpy((void *)rd_phys, rd, rd_size);
+            bi->initrd_phys = rd_phys;
+            bi->initrd_size = rd_size;
+            print("Initrd: "); print_dec(rd_size / 1024); print(" KiB at phys "); print_hex(rd_phys); print("\n");
+        }
+        BS->FreePool(rd);
+    } else {
+        print("Initrd: not found (no user programs)\n");
     }
 
     /* ---- page tables */

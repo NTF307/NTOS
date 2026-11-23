@@ -11,6 +11,7 @@
 #include "arch.h"
 #include "lib.h"
 #include "mm.h"
+#include "proc.h"
 
 #define STACK_CANARY 0x4E544F53535441CBULL
 
@@ -93,6 +94,10 @@ static void schedule(void)
     if (next == prev) return;
 
     check_stack(prev);
+    /* Next thread's kernel stack for ring-3 entries, and its address space. */
+    gdt_set_kernel_stack((uint64_t)next->stack + next->stack_size);
+    uint64_t cr3 = next->cr3 ? next->cr3 : vmm_kernel_pml4();
+    if ((read_cr3() & ~0xFFFULL) != cr3) write_cr3(cr3);
     total_switches++;
     next->switches++;
     current = next;
@@ -170,7 +175,7 @@ const char *thread_state_name(thread_state s)
 }
 
 /* ----------------------------------------------------------- threads */
-thread_t *thread_create(const char *name, thread_fn fn, void *arg)
+static thread_t *create(const char *name, thread_fn fn, void *arg, bool start)
 {
     thread_t *t = kzalloc(sizeof *t);
     if (!t) return NULL;
@@ -194,10 +199,39 @@ thread_t *thread_create(const char *name, thread_fn fn, void *arg)
 
     uint64_t f = irq_save();
     register_thread(t, name);
-    make_ready(t);
+    if (start) make_ready(t);
+    else t->state = THREAD_BLOCKED;            /* parked until thread_start */
     irq_restore(f);
     return t;
 }
+
+thread_t *thread_create(const char *name, thread_fn fn, void *arg)         { return create(name, fn, arg, true); }
+thread_t *thread_create_stopped(const char *name, thread_fn fn, void *arg) { return create(name, fn, arg, false); }
+
+void thread_start(thread_t *t)
+{
+    uint64_t f = irq_save();
+    if (t->state == THREAD_BLOCKED && !t->wq) make_ready(t);
+    irq_restore(f);
+}
+
+void thread_interrupt(thread_t *t)
+{
+    uint64_t f = irq_save();
+    if (t->state == THREAD_SLEEPING) {
+        thread_t *dummy = NULL;
+        fifo_remove(&sleepers, &dummy, t);
+        make_ready(t);
+        need_resched = true;
+    } else if (t->state == THREAD_BLOCKED && t->wq) {
+        fifo_remove(&t->wq->head, &t->wq->tail, t);
+        make_ready(t);
+        need_resched = true;
+    }
+    irq_restore(f);
+}
+
+bool thread_kill_pending(void) { return active && current->kill_pending; }
 
 void thread_yield(void)
 {
@@ -243,6 +277,12 @@ int thread_kill(uint32_t tid)
     while (t && (t->tid != tid || t->state == THREAD_DEAD)) t = t->all_next;
     if (!t) { irq_restore(f); return -1; }
     if (t == &boot_thread || t == idle_thread) { irq_restore(f); return -2; }
+    if (t->proc) {                              /* user thread: it cleans up its process itself */
+        t->kill_pending = true;
+        irq_restore(f);
+        thread_interrupt(t);
+        return 0;
+    }
     if (t == current) thread_exit();
 
     switch (t->state) {
@@ -270,6 +310,7 @@ size_t thread_list(thread_info *out, size_t max)
         out[n].cpu_ticks = t->cpu_ticks;
         out[n].switches = t->switches;
         out[n].stack_size = t->stack_size;
+        out[n].user = t->proc != NULL;
     }
     irq_restore(f);
     /* all_threads is newest-first; show oldest first */

@@ -97,6 +97,29 @@ foreach ($src in $Sources) {
 Invoke-Tool $LdLld (@('-T', "$Root\kernel\linker.ld", '-nostdlib', '-static', '-z', 'max-page-size=0x1000',
                       '-o', "$Esp\NTOS\KERNEL.ELF") + $Objects)
 
+# ---------------------------------------------------------- user programs
+$UserFlags = @('--target=x86_64-unknown-none-elf', '-std=c17', '-O2', '-Wall', '-Wextra',
+               '-ffreestanding', '-fno-stack-protector', '-fno-pic', '-fno-pie', '-fno-builtin',
+               '-mgeneral-regs-only', '-nostdlibinc', "-I$Root\user\include")
+Write-Host '-- user'
+$UserObj = Join-Path $Obj 'user'
+$UserOut = Join-Path $Out 'user'
+foreach ($d in @($UserObj, $UserOut)) { New-Item -ItemType Directory -Force $d | Out-Null }
+Get-ChildItem $UserOut -Filter *.elf | Remove-Item -Force
+Invoke-Tool $Nasm @('-f', 'elf64', '-o', "$UserObj\crt0.o", "$Root\user\lib\crt0.asm")
+Invoke-Tool $Clang ($UserFlags + @('-c', "$Root\user\lib\libc.c", '-o', "$UserObj\libc.o"))
+$Programs = @()
+foreach ($src in Get-ChildItem "$Root\user\bin" -Filter *.c) {
+    Write-Host "   user\bin\$($src.Name)"
+    $o = Join-Path $UserObj ($src.BaseName + '.o')
+    $elf = Join-Path $UserOut ($src.BaseName + '.elf')
+    Invoke-Tool $Clang ($UserFlags + @('-c', $src.FullName, '-o', $o))
+    Invoke-Tool $LdLld @('-T', "$Root\user\user.ld", '-nostdlib', '-static', '-z', 'max-page-size=0x1000',
+                         '-o', $elf, "$UserObj\crt0.o", $o, "$UserObj\libc.o")
+    $Programs += $elf
+}
+Invoke-Tool $Python (@("$Root\tools\mkinitrd.py", '--out', "$Esp\NTOS\INITRD.TAR") + $Programs)
+
 # ------------------------------------------------------------------ ISO
 Write-Host '-- iso'
 $IsoTmp = Join-Path $Out 'ntos.iso'
@@ -153,11 +176,18 @@ Write-Host "== OK: ISO\$IsoName ($size MiB)" -ForegroundColor Green
 if ($Test) {
     Invoke-Tool $Python @("$Root\tools\qemu_test.py", $IsoPath, '--out', "$Out\test",
                           '--mouse', '300,200',
-                          '--type', 'heaptest', '--type', 'threadtest', '--type', 'spawn 2',
-                          '--type', 'ps', '--type', 'mouse',
+                          '--type', 'heaptest', '--type', 'threadtest', '--type', 'ls',
+                          '--type', 'hello one two', '--type', 'usertest',
+                          '--type', 'fault kernel', '--type', 'fault badptr',
+                          '--type', 'ask', '--type', 'NTOS', '--type', 'spin', '--type', '^C',
+                          '--type', 'counter 2 200 &', '--type', 'ps', '--type', 'mouse',
                           '--expect', 'Scheduler: preemptive', '--expect', 'PS/2 keyboard ready',
-                          '--expect', 'PS/2 mouse ready', '--expect', 'heaptest: 64 allocations verified',
-                          '--expect', 'threadtest: PASS', '--expect', 'started spinner',
+                          '--expect', 'PS/2 mouse ready', '--expect', 'System calls: SYSCALL/SYSRET',
+                          '--expect', 'Initrd:', '--expect', 'heaptest: 64 allocations verified',
+                          '--expect', 'threadtest: PASS', '--expect', 'Hello from user mode',
+                          '--expect', 'argv[2] = ', '--expect', 'usertest: PASS',
+                          '--expect', 'fault[', '--expect', 'process killed', '--expect', 'EFAULT - ok',
+                          '--expect', 'Hello, NTOS!', '--expect', '[killed]', '--expect', '[counter',
                           '--expect', 'context switches since boot', '--expect', 'packets')
 }
 elseif ($Run) {

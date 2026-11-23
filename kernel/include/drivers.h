@@ -54,6 +54,7 @@ int         keyboard_getchar(void);          /* blocks; ASCII or KEY_* for speci
 bool        keyboard_poll(int *key);         /* non-blocking keyboard_getchar */
 uint8_t     keyboard_mods(void);
 const char *keyboard_key_name(uint16_t key);
+void        keyboard_set_ctrl_c_hook(bool (*hook)(void));   /* return true to swallow the key */
 
 /* ---- mouse.c ------------------------------------------------------------ */
 #define MOUSE_LEFT   0x01

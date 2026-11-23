@@ -14,6 +14,7 @@ typedef enum {
 } thread_state;
 
 struct waitq;
+struct process;
 
 typedef struct thread {
     uint64_t       rsp;                     /* saved stack pointer while switched out */
@@ -28,6 +29,9 @@ typedef struct thread {
     struct thread *next;                    /* run queue / sleep list / wait queue / zombie list */
     struct thread *all_next;                /* list of every thread */
     struct waitq  *wq;                      /* THREAD_BLOCKED: queue it waits on */
+    struct process *proc;                   /* owning user process, NULL for kernel threads */
+    uint64_t       cr3;                     /* page tables to run with, 0 = kernel's */
+    volatile bool  kill_pending;            /* user thread: exit at the next safe point */
 } thread_t;
 
 typedef struct waitq { thread_t *head, *tail; } waitq_t;
@@ -41,6 +45,7 @@ typedef struct {
     char         name[THREAD_NAME_MAX];
     uint64_t     cpu_ticks, switches;
     size_t       stack_size;
+    bool         user;
 } thread_info;
 
 void        sched_init(void);               /* adopts the boot context as thread 1 */
@@ -48,11 +53,15 @@ bool        sched_active(void);
 uint64_t    sched_context_switches(void);
 
 thread_t   *thread_create(const char *name, thread_fn fn, void *arg);
+thread_t   *thread_create_stopped(const char *name, thread_fn fn, void *arg);   /* start with thread_start */
+void        thread_start(thread_t *t);
+void        thread_interrupt(thread_t *t);  /* wake from sleep/wait early (IRQ-safe) */
+bool        thread_kill_pending(void);
 thread_t   *thread_current(void);
 void        thread_yield(void);
 void        thread_sleep_ms(uint64_t ms);
 NORETURN void thread_exit(void);
-int         thread_kill(uint32_t tid);      /* 0 = killed, -1 = no such thread, -2 = protected */
+int         thread_kill(uint32_t tid);      /* 0 = killed (user: exits at next safe point), -1 = none, -2 = protected */
 size_t      thread_list(thread_info *out, size_t max);
 const char *thread_state_name(thread_state s);
 

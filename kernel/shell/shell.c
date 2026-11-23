@@ -7,6 +7,7 @@
 #include "theme.h"
 #include "version.h"
 #include "sched.h"
+#include "proc.h"
 
 #define LINE_MAX  256
 #define HIST_MAX  16
@@ -244,10 +245,11 @@ static void cmd_ps(int argc, char **argv)
     static thread_info list[64];
     size_t n = thread_list(list, ARRAY_SIZE(list));
     uint32_t hz = timer_hz();
-    kprintf("  TID  STATE       CPU ms   SWITCHES  STACK  NAME\n");
+    kprintf("  TID  MODE    STATE       CPU ms   SWITCHES  STACK  NAME\n");
     for (size_t i = 0; i < n; i++)
-        kprintf("  %3u  %-9s %8lu %10lu  %3luK   %s\n", list[i].tid, thread_state_name(list[i].state),
-                list[i].cpu_ticks * 1000 / hz, list[i].switches, list[i].stack_size >> 10, list[i].name);
+        kprintf("  %3u  %-6s  %-9s %8lu %10lu  %3luK   %s\n", list[i].tid, list[i].user ? "user" : "kernel",
+                thread_state_name(list[i].state), list[i].cpu_ticks * 1000 / hz, list[i].switches,
+                list[i].stack_size >> 10, list[i].name);
     kprintf("%lu thread(s), %lu context switches since boot\n", n, sched_context_switches());
 }
 
@@ -389,6 +391,61 @@ static void cmd_keys(int argc, char **argv)
     }
 }
 
+static void ls_entry(const char *name, uint64_t size, void *ctx)
+{
+    (*(int *)ctx)++;
+    kprintf("  %-20s %7lu bytes\n", name, size);
+}
+
+static void cmd_ls(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    int n = 0;
+    initrd_list(ls_entry, &n);
+    if (!n) error("initrd is empty or missing");
+    else kprintf("%d file(s). Run a program by typing its name; add '&' to run it in the background.\n", n);
+}
+
+static const char *spawn_error(int r)
+{
+    switch (-r) {
+    case E_NOENT:  return "no such program";
+    case E_NOEXEC: return "not a valid executable";
+    case E_NOMEM:  return "out of memory";
+    case E_INVAL:  return "too many or too long arguments";
+    default:       return "cannot start program";
+    }
+}
+
+/* Start a user program; wait for it unless the last argument is '&'. */
+static void run_program(int argc, char **argv)
+{
+    bool background = argc > 1 && strcmp(argv[argc - 1], "&") == 0;
+    if (background) argc--;
+    int pid = process_spawn(argv[0], argc, (const char *const *)argv, 0, background);
+    if (pid < 0) {
+        uint32_t f, b;
+        console_get_color(&f, &b);
+        console_set_color(THEME_ERROR, b);
+        kprintf("%s: %s\n", argv[0], spawn_error(pid));
+        console_set_color(f, b);
+        return;
+    }
+    if (background) { kprintf("[%d] %s running in the background\n", pid, argv[0]); return; }
+    process_set_foreground((uint32_t)pid);
+    int code = 0;
+    process_wait((uint32_t)pid, 0, &code);
+    process_set_foreground(0);
+    if (code == -9) kprintf("^C [killed]\n");
+    else if (code != 0 && code != -1) kprintf("[exit code %d]\n", code);
+}
+
+static void cmd_run(int argc, char **argv)
+{
+    if (argc < 2) { error("usage: run <program> [args...] [&]"); return; }
+    run_program(argc - 1, argv + 1);
+}
+
 static const command commands[] = {
     { "help",     "show this list",                          cmd_help },
     { "clear",    "clear the screen",                        cmd_clear },
@@ -397,8 +454,10 @@ static const command commands[] = {
     { "mem",      "memory map and allocator statistics",     cmd_mem },
     { "uptime",   "time since boot",                         cmd_uptime },
     { "heaptest", "exercise the kernel heap",                cmd_heaptest },
-    { "ps",       "list threads",                            cmd_ps },
-    { "kill",     "stop a thread: kill <tid>",               cmd_kill },
+    { "ls",       "list user programs in the initrd",        cmd_ls },
+    { "run",      "run a program: run <prog> [args] [&]",    cmd_run },
+    { "ps",       "list threads (user and kernel)",          cmd_ps },
+    { "kill",     "stop a thread or program: kill <tid>",    cmd_kill },
     { "spawn",    "start CPU-bound test threads: spawn [n]", cmd_spawn },
     { "sleep",    "sleep for <ms> milliseconds",             cmd_sleep },
     { "threadtest", "scheduler + mutex self-test",           cmd_threadtest },
@@ -427,7 +486,8 @@ void shell_run(void)
 {
     char line[LINE_MAX];
     char *argv[ARGS_MAX];
-    kprintf("Type 'help' for a list of commands.\n\n");
+    keyboard_set_ctrl_c_hook(process_interrupt_foreground);
+    kprintf("Type 'help' for a list of commands, 'ls' for programs.\n\n");
     for (;;) {
         prompt();
         if (!read_line(line)) continue;
@@ -435,7 +495,10 @@ void shell_run(void)
         if (!argc) continue;
         const command *c = commands;
         while (c->name && strcmp(c->name, argv[0]) != 0) c++;
+        const uint8_t *img;
+        uint64_t img_size;
         if (c->name) c->fn(argc, argv);
+        else if (initrd_find(argv[0], &img, &img_size)) run_program(argc, argv);
         else {
             uint32_t f, b;
             console_get_color(&f, &b);

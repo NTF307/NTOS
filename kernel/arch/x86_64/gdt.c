@@ -15,7 +15,7 @@ typedef struct PACKED {
 static tss_t    tss;
 static uint64_t gdt[7];
 static uint8_t  df_stack[16384] ALIGNED(16);      /* IST1: double fault */
-static uint8_t  ring0_stack[16384] ALIGNED(16);   /* RSP0: future user mode */
+static uint8_t  ring0_stack[16384] ALIGNED(16);   /* RSP0 until the first user thread runs */
 
 static struct PACKED { uint16_t limit; uint64_t base; } gdtr;
 
@@ -56,4 +56,12 @@ void gdt_init(void)
         "mov %%ax, %%gs\n\t"
         :: "m"(gdtr) : "rax", "memory");
     __asm__ volatile("ltr %w0" :: "r"((uint16_t)GDT_TSS));
+}
+
+extern uint64_t syscall_kernel_rsp;     /* syscall.asm: stack the syscall entry switches to */
+
+void gdt_set_kernel_stack(uint64_t top)
+{
+    tss.rsp[0] = top;
+    syscall_kernel_rsp = top;
 }

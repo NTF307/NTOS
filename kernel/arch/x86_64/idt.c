@@ -5,6 +5,7 @@
 #include "console.h"
 #include "theme.h"
 #include "sched.h"
+#include "proc.h"
 
 typedef struct PACKED {
     uint16_t off_lo, selector;
@@ -135,7 +136,10 @@ void isr_dispatch(interrupt_frame *f)
 {
     uint64_t v = f->vector;
 
-    if (v < 32) exception_panic(f);
+    if (v < 32) {
+        if ((f->cs & 3) == 3) process_fault(f, exception_names[v]);   /* user bug: kill the process */
+        exception_panic(f);
+    }
 
     if (v >= IRQ_BASE && v < IRQ_BASE + 16) {
         int irq = (int)(v - IRQ_BASE);
@@ -152,6 +156,7 @@ void isr_dispatch(interrupt_frame *f)
         if (irq >= 8) outb(PIC2_CMD, PIC_EOI);
         outb(PIC1_CMD, PIC_EOI);
         sched_irq_exit();           /* may switch threads; we resume here later */
+        if ((f->cs & 3) == 3) process_check_kill();
         return;
     }
 

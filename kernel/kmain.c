@@ -5,6 +5,7 @@
 #include "lib.h"
 #include "mm.h"
 #include "sched.h"
+#include "proc.h"
 #include "theme.h"
 #include "version.h"
 
@@ -89,6 +90,10 @@ NORETURN void kmain(const ntos_boot_info *bi)
     else status(THEME_WARN, "WARN", "Console back buffer unavailable");
     heap_init();
     ok("Kernel heap ready");
+    vmm_init();
+    ok("Virtual memory: kernel page tables, identity map removed [%s]", vmm_features());
+    syscall_init();
+    ok("System calls: SYSCALL/SYSRET, ring 3 user mode");
 
     pit_init(1000);
     sched_init();
@@ -113,6 +118,9 @@ NORETURN void kmain(const ntos_boot_info *bi)
     } else {
         warn("No PS/2 mouse found");
     }
+
+    if (initrd_init(bi->initrd_phys, bi->initrd_size)) ok("Initrd: %lu KiB of user programs", bi->initrd_size >> 10);
+    else warn("No initrd: user programs unavailable");
 
     kprintf("\n");
     serial_write("NTOS shell ready\n", 17);

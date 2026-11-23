@@ -56,6 +56,7 @@ static const char shift_to[]   = "~!@#$%^&*()_+{}|:\"<>?";
 static key_event         buf[BUF_SIZE];
 static volatile uint32_t head, tail;
 static waitq_t           waiters;
+static bool            (*ctrl_c_hook)(void);
 
 static bool    held[KEY_KPSLASH + 1];
 static uint8_t locks = KMOD_NUM;                  /* NumLock on by default */
@@ -176,8 +177,14 @@ static void kbd_irq(interrupt_frame *f)
     if (pressed && key == KEY_DELETE && (current_mods() & (KMOD_CTRL | KMOD_ALT)) == (KMOD_CTRL | KMOD_ALT))
         cpu_reboot();
 
+    if (pressed && key == 'c' && ctrl_c_hook && (current_mods() & (KMOD_CTRL | KMOD_ALT)) == KMOD_CTRL &&
+        ctrl_c_hook())
+        return;                                    /* consumed: interrupted the foreground program */
+
     push(key, scancode, pressed);
 }
+
+void keyboard_set_ctrl_c_hook(bool (*hook)(void)) { ctrl_c_hook = hook; }
 
 bool keyboard_init(void)
 {
@@ -193,7 +200,7 @@ bool keyboard_get_event(key_event *ev, bool block)
 {
     uint64_t f = irq_save();
     while (head == tail) {
-        if (!block) { irq_restore(f); return false; }
+        if (!block || thread_kill_pending()) { irq_restore(f); return false; }
         waitq_wait(&waiters);
     }
     *ev = buf[tail];
