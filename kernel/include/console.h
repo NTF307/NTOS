@@ -18,6 +18,10 @@ void     console_get_color(uint32_t *fg, uint32_t *bg);
 void     console_set_cursor(bool visible);
 uint32_t console_cols(void);
 uint32_t console_rows(void);
+void     console_screen_size(uint32_t *w, uint32_t *h);   /* pixels */
+
+/* Mouse pointer overlay (needs the back buffer). Returns false if unavailable. */
+bool     console_pointer_set(int32_t x, int32_t y, bool visible);
 
 /* font.c - built-in 5x7 bitmap font (+2 descender rows) */
 #define FONT_GLYPH_W    5

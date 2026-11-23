@@ -4,6 +4,7 @@
 #include "mm.h"
 #include "console.h"
 #include "theme.h"
+#include "sched.h"
 
 typedef struct PACKED {
     uint16_t off_lo, selector;
@@ -108,6 +109,7 @@ void idt_init(void)
 static NORETURN void exception_panic(interrupt_frame *f)
 {
     cpu_cli();
+    g_panicking = true;
     console_set_color(THEME_PANIC_FG, THEME_PANIC_BG);
     console_clear();
     kprintf("\n  *** NTOS KERNEL PANIC ***\n\n");
@@ -149,6 +151,7 @@ void isr_dispatch(interrupt_frame *f)
         if (irq_handlers[irq]) irq_handlers[irq](f);
         if (irq >= 8) outb(PIC2_CMD, PIC_EOI);
         outb(PIC1_CMD, PIC_EOI);
+        sched_irq_exit();           /* may switch threads; we resume here later */
         return;
     }
 

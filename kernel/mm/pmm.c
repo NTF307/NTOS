@@ -1,6 +1,7 @@
 /* pmm.c - bitmap physical page allocator (1 bit per 4 KiB page, 1 = used) */
 #include "mm.h"
 #include "lib.h"
+#include "arch.h"
 
 uint64_t g_hhdm;
 
@@ -51,7 +52,7 @@ void pmm_init(const ntos_boot_info *bi)
     hint = 256;
 }
 
-uint64_t pmm_alloc_page(void)
+static uint64_t alloc_page_locked(void)
 {
     for (uint64_t n = 0; n < bitmap_pages; n++) {
         uint64_t p = (hint + n) % bitmap_pages;
@@ -66,10 +67,9 @@ uint64_t pmm_alloc_page(void)
     return 0;
 }
 
-uint64_t pmm_alloc_pages(size_t count)
+static uint64_t alloc_pages_locked(size_t count)
 {
-    if (count == 0) return 0;
-    if (count == 1) return pmm_alloc_page();
+    if (count == 1) return alloc_page_locked();
     uint64_t run = 0;
     for (uint64_t p = 256; p < bitmap_pages; p++) {
         if (is_used(p)) { run = 0; continue; }
@@ -83,7 +83,7 @@ uint64_t pmm_alloc_pages(size_t count)
     return 0;
 }
 
-void pmm_free_page(uint64_t phys)
+static void free_page_locked(uint64_t phys)
 {
     uint64_t p = phys / PAGE_SIZE;
     if (p >= bitmap_pages || !is_used(p)) panic("pmm: bad free of 0x%lx", phys);
@@ -92,9 +92,36 @@ void pmm_free_page(uint64_t phys)
     if (p < hint) hint = p;
 }
 
+/* Public entry points are interrupt-safe (single CPU: masking IRQs is the lock). */
+uint64_t pmm_alloc_page(void)
+{
+    uint64_t f = irq_save();
+    uint64_t p = alloc_page_locked();
+    irq_restore(f);
+    return p;
+}
+
+uint64_t pmm_alloc_pages(size_t count)
+{
+    if (count == 0) return 0;
+    uint64_t f = irq_save();
+    uint64_t p = alloc_pages_locked(count);
+    irq_restore(f);
+    return p;
+}
+
+void pmm_free_page(uint64_t phys)
+{
+    uint64_t f = irq_save();
+    free_page_locked(phys);
+    irq_restore(f);
+}
+
 void pmm_free_pages(uint64_t phys, size_t count)
 {
-    for (size_t i = 0; i < count; i++) pmm_free_page(phys + i * PAGE_SIZE);
+    uint64_t f = irq_save();
+    for (size_t i = 0; i < count; i++) free_page_locked(phys + i * PAGE_SIZE);
+    irq_restore(f);
 }
 
 uint64_t pmm_total_bytes(void) { return total_pages * PAGE_SIZE; }

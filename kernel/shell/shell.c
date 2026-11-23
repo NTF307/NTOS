@@ -6,6 +6,7 @@
 #include "mm.h"
 #include "theme.h"
 #include "version.h"
+#include "sched.h"
 
 #define LINE_MAX  256
 #define HIST_MAX  16
@@ -112,11 +113,11 @@ static void cmd_help(int argc, char **argv)
         uint32_t f, b;
         console_get_color(&f, &b);
         console_set_color(THEME_ACCENT, b);
-        kprintf("  %-10s", c->name);
+        kprintf("  %-11s", c->name);
         console_set_color(f, b);
         kprintf(" %s\n", c->help);
     }
-    kprintf("Keys: Up/Down = history, Ctrl+C = cancel line, Ctrl+L = clear screen\n");
+    kprintf("Keys: Up/Down = history, Ctrl+C = cancel line, Ctrl+L = clear screen, Ctrl+Alt+Del = reboot\n");
 }
 
 static void cmd_clear(int argc, char **argv) { (void)argc; (void)argv; console_clear(); }
@@ -215,6 +216,179 @@ static void cmd_halt(int argc, char **argv)
     cpu_halt_forever();
 }
 
+/* ------------------------------------------------- threads and input */
+static bool parse_uint(const char *s, uint64_t *out)
+{
+    uint64_t v = 0;
+    if (!s || !*s) return false;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9') return false;
+        v = v * 10 + (uint64_t)(*s - '0');
+    }
+    *out = v;
+    return true;
+}
+
+static void error(const char *msg)
+{
+    uint32_t f, b;
+    console_get_color(&f, &b);
+    console_set_color(THEME_ERROR, b);
+    kprintf("%s\n", msg);
+    console_set_color(f, b);
+}
+
+static void cmd_ps(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    static thread_info list[64];
+    size_t n = thread_list(list, ARRAY_SIZE(list));
+    uint32_t hz = timer_hz();
+    kprintf("  TID  STATE       CPU ms   SWITCHES  STACK  NAME\n");
+    for (size_t i = 0; i < n; i++)
+        kprintf("  %3u  %-9s %8lu %10lu  %3luK   %s\n", list[i].tid, thread_state_name(list[i].state),
+                list[i].cpu_ticks * 1000 / hz, list[i].switches, list[i].stack_size >> 10, list[i].name);
+    kprintf("%lu thread(s), %lu context switches since boot\n", n, sched_context_switches());
+}
+
+static void cmd_kill(int argc, char **argv)
+{
+    uint64_t tid;
+    if (argc < 2 || !parse_uint(argv[1], &tid)) { error("usage: kill <tid>"); return; }
+    int r = thread_kill((uint32_t)tid);
+    if (r == 0) kprintf("killed thread %lu\n", tid);
+    else if (r == -2) error("that thread cannot be killed");
+    else error("no such thread");
+}
+
+/* CPU-bound worker: proves preemption keeps the shell responsive. */
+static void spinner_main(void *arg)
+{
+    (void)arg;
+    volatile uint64_t n = 0;
+    for (;;) n++;
+}
+
+static void cmd_spawn(int argc, char **argv)
+{
+    uint64_t count = 1;
+    if (argc > 1 && (!parse_uint(argv[1], &count) || count == 0 || count > 32)) { error("usage: spawn [1-32]"); return; }
+    for (uint64_t i = 0; i < count; i++) {
+        thread_t *t = thread_create("spinner", spinner_main, NULL);
+        if (!t) { error("thread_create failed"); return; }
+        kprintf("started spinner, tid %u\n", t->tid);
+    }
+    kprintf("These loop forever; use 'ps' to watch and 'kill <tid>' to stop them.\n");
+}
+
+static void cmd_sleep(int argc, char **argv)
+{
+    uint64_t ms;
+    if (argc < 2 || !parse_uint(argv[1], &ms)) { error("usage: sleep <ms>"); return; }
+    uint64_t t0 = timer_ticks();
+    thread_sleep_ms(ms);
+    kprintf("slept %lu ms\n", (timer_ticks() - t0) * 1000 / timer_hz());
+}
+
+#define TT_THREADS 8
+#define TT_ITERS   20000
+static mutex_t           tt_lock;
+static volatile uint64_t tt_counter;
+static volatile uint32_t tt_done;
+
+static void tt_worker(void *arg)
+{
+    uintptr_t id = (uintptr_t)arg;
+    for (int i = 0; i < TT_ITERS; i++) {
+        mutex_lock(&tt_lock);
+        uint64_t v = tt_counter;                       /* read-modify-write: racy without the lock */
+        if ((i & 255) == (int)id) thread_yield();      /* widen the window on purpose */
+        tt_counter = v + 1;
+        mutex_unlock(&tt_lock);
+    }
+    if (id & 1) thread_sleep_ms(20);
+    uint64_t f = irq_save();
+    tt_done++;
+    irq_restore(f);
+}
+
+static void cmd_threadtest(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    tt_counter = 0;
+    tt_done = 0;
+    uint64_t sw0 = sched_context_switches(), t0 = timer_ticks();
+    for (uintptr_t i = 0; i < TT_THREADS; i++)
+        if (!thread_create("tt-worker", tt_worker, (void *)i)) { error("thread_create failed"); return; }
+    while (tt_done < TT_THREADS) thread_sleep_ms(5);
+    uint64_t ms = (timer_ticks() - t0) * 1000 / timer_hz();
+    bool pass = tt_counter == (uint64_t)TT_THREADS * TT_ITERS;
+
+    uint64_t s0 = timer_ticks();
+    thread_sleep_ms(100);
+    uint64_t slept = (timer_ticks() - s0) * 1000 / timer_hz();
+    pass = pass && slept >= 100 && slept <= 120;
+
+    kprintf("threadtest: %u threads x %u locked increments = %lu (expected %u)\n",
+            TT_THREADS, TT_ITERS, tt_counter, TT_THREADS * TT_ITERS);
+    kprintf("            %lu context switches in %lu ms, sleep(100) took %lu ms\n",
+            sched_context_switches() - sw0, ms, slept);
+    uint32_t f, b;
+    console_get_color(&f, &b);
+    console_set_color(pass ? THEME_OK : THEME_ERROR, b);
+    kprintf("threadtest: %s\n", pass ? "PASS" : "FAIL");
+    console_set_color(f, b);
+}
+
+static void print_mouse(const mouse_state *s)
+{
+    kprintf("x=%4d y=%4d  buttons [%c%c%c]  packets %lu", s->x, s->y,
+            (s->buttons & MOUSE_LEFT) ? 'L' : '-', (s->buttons & MOUSE_MIDDLE) ? 'M' : '-',
+            (s->buttons & MOUSE_RIGHT) ? 'R' : '-', s->packets);
+}
+
+static void cmd_mouse(int argc, char **argv)
+{
+    mouse_state s;
+    mouse_get_state(&s);
+    if (!s.present) { error("no PS/2 mouse"); return; }
+    bool live = argc > 1 && strcmp(argv[1], "live") == 0;
+    kprintf("PS/2 mouse%s\n", s.has_wheel ? " with scroll wheel" : "");
+    if (!live) { print_mouse(&s); kprintf("\n"); return; }
+
+    kprintf("Live view - press any key to stop.\n");
+    int key;
+    for (;;) {
+        mouse_get_state(&s);
+        kprintf("\r");
+        print_mouse(&s);
+        kprintf("   ");
+        if (keyboard_poll(&key)) break;
+        thread_sleep_ms(50);
+    }
+    kprintf("\n");
+}
+
+static void cmd_keys(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    kprintf("Keyboard event viewer - press Esc to stop.\n");
+    key_event ev;
+    for (;;) {
+        keyboard_get_event(&ev, true);
+        uint8_t m = ev.mods;
+        kprintf("  %-7s %-10s scancode %04x  mods [%s%s%s%s] %s%s%s",
+                ev.pressed ? "press" : "release", keyboard_key_name(ev.key), ev.scancode,
+                (m & KMOD_SHIFT) ? "S" : "-", (m & KMOD_CTRL) ? "C" : "-", (m & KMOD_ALT) ? "A" : "-",
+                (m & KMOD_GUI) ? "W" : "-", (m & KMOD_CAPS) ? "Caps " : "", (m & KMOD_NUM) ? "Num " : "",
+                (m & KMOD_SCROLL) ? "Scroll" : "");
+        if (ev.ascii >= 32 && ev.ascii < 127) kprintf("  '%c'", ev.ascii);
+        else if (ev.ascii) kprintf("  0x%02x", (unsigned char)ev.ascii);
+        kprintf("\n");
+        if (ev.pressed && ev.key == KEY_ESC) break;
+    }
+}
+
 static const command commands[] = {
     { "help",     "show this list",                          cmd_help },
     { "clear",    "clear the screen",                        cmd_clear },
@@ -223,6 +397,13 @@ static const command commands[] = {
     { "mem",      "memory map and allocator statistics",     cmd_mem },
     { "uptime",   "time since boot",                         cmd_uptime },
     { "heaptest", "exercise the kernel heap",                cmd_heaptest },
+    { "ps",       "list threads",                            cmd_ps },
+    { "kill",     "stop a thread: kill <tid>",               cmd_kill },
+    { "spawn",    "start CPU-bound test threads: spawn [n]", cmd_spawn },
+    { "sleep",    "sleep for <ms> milliseconds",             cmd_sleep },
+    { "threadtest", "scheduler + mutex self-test",           cmd_threadtest },
+    { "mouse",    "mouse state: mouse [live]",               cmd_mouse },
+    { "keys",     "show raw keyboard events (Esc quits)",    cmd_keys },
     { "crash",    "trigger an exception: crash [ud|pf|div]", cmd_crash },
     { "reboot",   "restart the machine",                     cmd_reboot },
     { "halt",     "stop the CPU",                            cmd_halt },

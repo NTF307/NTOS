@@ -104,11 +104,14 @@ void kprintf(const char *fmt, ...)
     serial_write(buf, len);
 }
 
+volatile bool g_panicking;
+
 void panic(const char *fmt, ...)
 {
     char buf[512];
     va_list ap;
     cpu_cli();
+    g_panicking = true;
     va_start(ap, fmt);
     kvsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);

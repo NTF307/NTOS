@@ -3,12 +3,14 @@ bits 64
 
 section .text.entry
 global _start
+global boot_stack_bottom
+global boot_stack_top
 extern kmain
 
 _start:
     cli
     cld
-    mov rsp, stack_top          ; switch to the kernel's own stack
+    mov rsp, boot_stack_top          ; switch to the kernel's own stack
     xor rbp, rbp
     call kmain                  ; kmain(ntos_boot_info *bi) - never returns
 .hang:
@@ -18,6 +20,6 @@ _start:
 
 section .bss
 align 16
-stack_bottom:
+boot_stack_bottom:
     resb 65536
-stack_top:
+boot_stack_top:

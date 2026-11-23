@@ -14,3 +14,5 @@
 #define THEME_ERROR     0xFF5F5F   /* errors */
 #define THEME_PANIC_BG  0x5C0F14   /* kernel panic background */
 #define THEME_PANIC_FG  0xFFFFFF   /* kernel panic text */
+#define THEME_POINTER_FILL 0xFFFFFF   /* mouse pointer body */
+#define THEME_POINTER_EDGE 0x000000   /* mouse pointer outline */

@@ -1,6 +1,7 @@
 /* heap.c - kernel heap: first-fit free list with splitting and coalescing */
 #include "mm.h"
 #include "lib.h"
+#include "arch.h"
 
 #define HEAP_MAGIC      0x4E544F53u          /* "NTOS" */
 #define HEAP_INITIAL    (4ULL * 1024 * 1024)
@@ -39,7 +40,9 @@ void heap_init(void)
     if (!add_region(HEAP_INITIAL)) panic("heap: cannot allocate initial region");
 }
 
-void *kmalloc(size_t size)
+static void kfree_locked(void *ptr);
+
+static void *kmalloc_locked(size_t size)
 {
     if (size == 0) return NULL;
     size = ALIGN_UP(size, 16);
@@ -63,6 +66,22 @@ void *kmalloc(size_t size)
     return NULL;
 }
 
+void *kmalloc(size_t size)
+{
+    uint64_t f = irq_save();
+    void *p = kmalloc_locked(size);
+    irq_restore(f);
+    return p;
+}
+
+void kfree(void *ptr)
+{
+    if (!ptr) return;
+    uint64_t f = irq_save();
+    kfree_locked(ptr);
+    irq_restore(f);
+}
+
 void *kzalloc(size_t size)
 {
     void *p = kmalloc(size);
@@ -70,9 +89,8 @@ void *kzalloc(size_t size)
     return p;
 }
 
-void kfree(void *ptr)
+static void kfree_locked(void *ptr)
 {
-    if (!ptr) return;
     block_t *b = (block_t *)ptr - 1;
     if (b->magic != HEAP_MAGIC || b->free) panic("heap: invalid kfree(%p)", ptr);
     b->free = 1;
@@ -90,6 +108,8 @@ void kfree(void *ptr)
 void heap_stats(size_t *total, size_t *used, size_t *blocks)
 {
     size_t u = 0, n = 0;
+    uint64_t f = irq_save();
     for (block_t *b = head; b; b = b->next) { n++; if (!b->free) u += b->size + sizeof(block_t); }
+    irq_restore(f);
     *total = heap_total; *used = u; *blocks = n;
 }

@@ -4,6 +4,7 @@
 #include "drivers.h"
 #include "lib.h"
 #include "mm.h"
+#include "sched.h"
 #include "theme.h"
 #include "version.h"
 
@@ -29,6 +30,20 @@ static void ok(const char *fmt, ...)
     kvsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
     status(THEME_OK, " OK ", buf);
+}
+
+static void warn(const char *msg) { status(THEME_WARN, "WARN", msg); }
+
+/* Moves the on-screen pointer whenever the mouse reports motion. */
+static void pointer_main(void *arg)
+{
+    (void)arg;
+    mouse_event ev;
+    for (;;) {
+        if (!mouse_get_event(&ev, true)) { thread_sleep_ms(1000); continue; }
+        while (mouse_get_event(&ev, false)) ;          /* only the latest position matters */
+        console_pointer_set(ev.x, ev.y, true);
+    }
 }
 
 static void banner(void)
@@ -75,10 +90,29 @@ NORETURN void kmain(const ntos_boot_info *bi)
     heap_init();
     ok("Kernel heap ready");
 
-    pit_init(100);
-    keyboard_init();
+    pit_init(1000);
+    sched_init();
+    ok("Scheduler: preemptive round-robin, %u ms quantum, timer at %u Hz", SCHED_QUANTUM_MS, timer_hz());
+
+    uint32_t sw, sh;
+    console_screen_size(&sw, &sh);
+    bool have_ps2 = ps2_init();
+    bool have_kbd = have_ps2 && keyboard_init();
+    bool have_mouse = have_ps2 && mouse_init(sw, sh);
+    if (have_ps2) ps2_enable_irqs();
     cpu_sti();
-    ok("Timer at %u Hz, PS/2 keyboard ready", timer_hz());
+
+    if (have_kbd) ok("PS/2 keyboard ready");
+    else warn("No PS/2 controller: keyboard unavailable");
+    if (have_mouse) {
+        mouse_state ms;
+        mouse_get_state(&ms);
+        if (thread_create("pointer", pointer_main, NULL))
+            ok("PS/2 mouse ready (%s)", ms.has_wheel ? "with scroll wheel" : "3 buttons");
+        else warn("Cannot start pointer thread");
+    } else {
+        warn("No PS/2 mouse found");
+    }
 
     kprintf("\n");
     serial_write("NTOS shell ready\n", 17);

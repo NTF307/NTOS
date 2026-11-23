@@ -1,12 +1,13 @@
 /* pit.c - 8254 Programmable Interval Timer (IRQ 0), reboot and halt helpers */
 #include "arch.h"
+#include "sched.h"
 
 #define PIT_FREQ 1193182U
 
 static volatile uint64_t ticks;
 static uint32_t hz = 100;
 
-static void pit_irq(interrupt_frame *f) { (void)f; ticks++; }
+static void pit_irq(interrupt_frame *f) { (void)f; ticks++; sched_tick(); }
 
 void pit_init(uint32_t freq)
 {
@@ -22,12 +23,7 @@ void pit_init(uint32_t freq)
 uint64_t timer_ticks(void) { return ticks; }
 uint32_t timer_hz(void)    { return hz; }
 
-void timer_sleep_ms(uint64_t ms)
-{
-    uint64_t wait = (ms * hz + 999) / 1000;
-    uint64_t target = ticks + (wait ? wait : 1);
-    while (ticks < target) cpu_hlt();
-}
+void timer_sleep_ms(uint64_t ms) { thread_sleep_ms(ms); }
 
 void cpu_reboot(void)
 {

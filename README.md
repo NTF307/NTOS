@@ -14,7 +14,8 @@ Every build is kept in `ISO\` and also copied to `ISO\NTOS-latest.iso`.
 ## Test in QEMU
 
 1. In `C:\Users\Admin\Documents\Code\NTOS`, run `.\build.ps1 -Test`
-   Success: `RESULT: PASS - kernel reached the shell`; screenshot at `build\test\screen.png`.
+   Success: `RESULT: PASS - kernel reached the shell, 8/8 checks passed`; screenshot at `build\test\screen.png`.
+   The test injects mouse motion and runs `heaptest`, `threadtest`, `spawn`, `ps` and `mouse`.
 2. Or run `.\build.ps1 -Run` for an interactive QEMU window (serial log in the terminal).
 
 ## Boot in VMware Workstation
@@ -33,8 +34,15 @@ at any file in `ISO\`.
 2. In the PC's firmware setup: disable Secure Boot, enable UEFI boot.
 3. Boot from the USB stick.
 
-Keyboard input currently needs a PS/2 keyboard or a firmware with USB legacy
-keyboard emulation; native USB comes later.
+Keyboard and mouse currently need PS/2 devices or a firmware with USB legacy
+emulation; native USB comes later.
+
+## Shell commands
+
+`help`, `info`, `mem`, `uptime`, `heaptest`, `ps` (threads), `kill <tid>`,
+`spawn [n]` (CPU-bound test threads), `sleep <ms>`, `threadtest` (scheduler + mutex
+self-test), `mouse [live]`, `keys` (raw key events), `crash [ud|pf|div]`, `reboot`, `halt`.
+Ctrl+Alt+Del reboots.
 
 ## Layout
 
@@ -42,8 +50,9 @@ keyboard emulation; native USB comes later.
 |---|---|
 | `boot/` | UEFI loader (`BOOTX64.EFI`): GOP, ELF loading, page tables, ExitBootServices |
 | `include/bootinfo.h` | Loader ↔ kernel handoff structure and memory layout |
-| `kernel/arch/x86_64/` | Entry, GDT/TSS, IDT + exception handler, PIC/LAPIC, PIT timer |
-| `kernel/drivers/` | Framebuffer console + font, serial, PS/2 keyboard |
+| `kernel/arch/x86_64/` | Entry, GDT/TSS, IDT + exception handler, PIC/LAPIC, PIT timer, context switch |
+| `kernel/drivers/` | Framebuffer console + font + mouse pointer, serial, 8042 PS/2 controller, keyboard, mouse |
+| `kernel/sched/` | Kernel threads, preemptive round-robin scheduler (1000 Hz timer, 10 ms quantum), wait queues, mutexes |
 | `kernel/mm/` | Bitmap physical allocator, kernel heap |
 | `kernel/shell/` | Built-in shell (`help` lists commands) |
 | `tools/mkiso.py` | Builds the hybrid UEFI ISO (ISO 9660 + El Torito + FAT16 + MBR) |

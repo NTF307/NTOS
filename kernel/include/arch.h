@@ -19,6 +19,15 @@ static inline void io_wait(void) { outb(0x80, 0); }
 static inline void cpu_cli(void) { __asm__ volatile("cli" ::: "memory"); }
 static inline void cpu_sti(void) { __asm__ volatile("sti" ::: "memory"); }
 static inline void cpu_hlt(void) { __asm__ volatile("hlt" ::: "memory"); }
+
+/* Disable interrupts and return the previous RFLAGS; restore re-enables only if they were on. */
+static inline uint64_t irq_save(void)
+{
+    uint64_t f;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(f) :: "memory");
+    return f;
+}
+static inline void irq_restore(uint64_t f) { if (f & 0x200) cpu_sti(); }
 static inline uint64_t read_cr2(void) { uint64_t v; __asm__ volatile("mov %%cr2, %0" : "=r"(v)); return v; }
 static inline uint64_t read_cr3(void) { uint64_t v; __asm__ volatile("mov %%cr3, %0" : "=r"(v)); return v; }
 static inline uint64_t rdmsr(uint32_t msr)

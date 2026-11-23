@@ -16,4 +16,7 @@ char  *strncpy(char *dst, const char *src, size_t n);
 int  kvsnprintf(char *buf, size_t cap, const char *fmt, va_list ap);
 int  ksnprintf(char *buf, size_t cap, const char *fmt, ...) PRINTF_FMT(3, 4);
 void kprintf(const char *fmt, ...) PRINTF_FMT(1, 2);
+/* Set once the system is going down: locks become no-ops so the panic screen can print. */
+extern volatile bool g_panicking;
+
 NORETURN void panic(const char *fmt, ...) PRINTF_FMT(1, 2);

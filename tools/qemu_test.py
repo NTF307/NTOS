@@ -64,6 +64,13 @@ class QMP:
         self.cmd('send-key', keys=keys)
         time.sleep(0.03)
 
+    def mouse_move(self, dx, dy, steps=10):
+        for _ in range(steps):
+            self.cmd('input-send-event', events=[
+                {'type': 'rel', 'data': {'axis': 'x', 'value': dx // steps}},
+                {'type': 'rel', 'data': {'axis': 'y', 'value': dy // steps}}])
+            time.sleep(0.02)
+
 
 def ppm_to_png(ppm_path, png_path):
     with open(ppm_path, 'rb') as f:
@@ -97,6 +104,8 @@ def main():
     ap.add_argument('--type', action='append', default=[], help='command to type at the shell (repeatable)')
     ap.add_argument('--timeout', type=float, default=60)
     ap.add_argument('--port', type=int, default=4447)
+    ap.add_argument('--mouse', help='DX,DY relative mouse motion to inject before typing')
+    ap.add_argument('--expect', action='append', default=[], help='text that must appear in the serial log')
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -130,6 +139,10 @@ def main():
             time.sleep(0.25)
         if ok:
             time.sleep(0.5)
+            if args.mouse:
+                dx, dy = (int(v) for v in args.mouse.split(','))
+                qmp.mouse_move(dx, dy)
+                time.sleep(0.3)
             for line in args.type:
                 for ch in line:
                     qmp.key(ch)
@@ -156,7 +169,18 @@ def main():
     print(log.rstrip())
     print('--------------------')
     print(f'screenshot: {shot_png}' if os.path.exists(shot_png) else 'screenshot: (none)')
-    print('RESULT:', 'PASS - kernel reached the shell' if ok else 'FAIL - shell not reached')
+    if not ok:
+        print('RESULT: FAIL - shell not reached')
+        sys.exit(1)
+    missing = [e for e in args.expect if e not in log]
+    if 'PANIC' in log:
+        missing.append('(kernel panic in log)')
+    for e in args.expect:
+        print(('  ok      ' if e in log else '  MISSING ') + repr(e))
+    if missing:
+        print('RESULT: FAIL - expected output missing')
+        sys.exit(1)
+    print(f'RESULT: PASS - kernel reached the shell, {len(args.expect)}/{len(args.expect)} checks passed')
     sys.exit(0 if ok else 1)
 
 

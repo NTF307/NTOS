@@ -152,7 +152,13 @@ Write-Host "== OK: ISO\$IsoName ($size MiB)" -ForegroundColor Green
 # ------------------------------------------------------------- run/test
 if ($Test) {
     Invoke-Tool $Python @("$Root\tools\qemu_test.py", $IsoPath, '--out', "$Out\test",
-                          '--type', 'info', '--type', 'heaptest')
+                          '--mouse', '300,200',
+                          '--type', 'heaptest', '--type', 'threadtest', '--type', 'spawn 2',
+                          '--type', 'ps', '--type', 'mouse',
+                          '--expect', 'Scheduler: preemptive', '--expect', 'PS/2 keyboard ready',
+                          '--expect', 'PS/2 mouse ready', '--expect', 'heaptest: 64 allocations verified',
+                          '--expect', 'threadtest: PASS', '--expect', 'started spinner',
+                          '--expect', 'context switches since boot', '--expect', 'packets')
 }
 elseif ($Run) {
     Copy-Item 'C:\Program Files\qemu\share\edk2-i386-vars.fd' "$Out\vars.fd" -Force

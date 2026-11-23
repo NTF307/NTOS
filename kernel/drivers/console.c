@@ -7,6 +7,7 @@
 #include "theme.h"
 #include "mm.h"
 #include "lib.h"
+#include "sched.h"
 
 #define CELL_W 6
 #define CELL_H 10
@@ -17,6 +18,35 @@ static uint32_t width, height, pitch, format, scale;
 static uint32_t cols, rows, cx, cy;
 static uint32_t fg = THEME_FG, bg = THEME_BG;
 static bool     cursor_visible, ready;
+static mutex_t  lock;                     /* all public drawing entry points take it */
+
+/* Mouse pointer: drawn on the visible framebuffer only, so the back buffer
+ * always holds the real screen contents and erasing is a copy back. */
+static int32_t  ptr_x, ptr_y;
+static bool     ptr_visible;
+static const char *const pointer_shape[] = {
+    "X",
+    "XX",
+    "X.X",
+    "X..X",
+    "X...X",
+    "X....X",
+    "X.....X",
+    "X......X",
+    "X.......X",
+    "X........X",
+    "X.........X",
+    "X......XXXXX",
+    "X...X..X",
+    "X..XX..X",
+    "X.X  X..X",
+    "XX   X..X",
+    "X     X..X",
+    "      X..X",
+    "       XX",
+};
+#define PTR_W 12
+#define PTR_H ((uint32_t)ARRAY_SIZE(pointer_shape))
 
 static inline uint32_t to_pixel(uint32_t rgb)
 {
@@ -82,6 +112,52 @@ static void scroll(void)
     }
 }
 
+static void pointer_draw(void)
+{
+    uint32_t fill = to_pixel(THEME_POINTER_FILL), edge = to_pixel(THEME_POINTER_EDGE);
+    for (uint32_t r = 0; r < PTR_H; r++) {
+        const char *row = pointer_shape[r];
+        for (uint32_t c = 0; row[c]; c++) {
+            if (row[c] == ' ') continue;
+            uint32_t px = row[c] == 'X' ? edge : fill;
+            for (uint32_t sy = 0; sy < scale; sy++) {
+                int64_t y = ptr_y + (int64_t)(r * scale + sy);
+                if (y < 0 || y >= (int64_t)height) continue;
+                uint32_t *line = (uint32_t *)(fb + (uint64_t)y * pitch);
+                for (uint32_t sx = 0; sx < scale; sx++) {
+                    int64_t x = ptr_x + (int64_t)(c * scale + sx);
+                    if (x >= 0 && x < (int64_t)width) line[x] = px;
+                }
+            }
+        }
+    }
+}
+
+static void pointer_erase(void)
+{
+    int64_t x0 = MAX(ptr_x, 0), y0 = MAX(ptr_y, 0);
+    int64_t x1 = MIN((int64_t)ptr_x + PTR_W * scale, (int64_t)width);
+    int64_t y1 = MIN((int64_t)ptr_y + PTR_H * scale, (int64_t)height);
+    for (int64_t y = y0; y < y1; y++) {
+        uint64_t off = (uint64_t)y * pitch + (uint64_t)x0 * 4;
+        memcpy(fb + off, back + off, (uint64_t)(x1 - x0) * 4);
+    }
+}
+
+/* Text drawing may have painted over (or scrolled away) the pointer. */
+static void pointer_refresh(void) { if (ptr_visible) pointer_draw(); }
+
+bool console_pointer_set(int32_t x, int32_t y, bool visible)
+{
+    if (!back) return false;
+    mutex_lock(&lock);
+    if (ptr_visible) pointer_erase();
+    ptr_x = x; ptr_y = y; ptr_visible = visible;
+    if (visible) pointer_draw();
+    mutex_unlock(&lock);
+    return true;
+}
+
 void console_init(const ntos_framebuffer *info, uint64_t hhdm)
 {
     font_init();
@@ -108,17 +184,30 @@ bool console_enable_backbuffer(void)
     return true;
 }
 
+static void putc_locked(char c);
+
 void console_clear(void)
 {
     if (!ready) return;
+    mutex_lock(&lock);
     fill_rect(0, 0, width, height, bg);
     cx = cy = 0;
     draw_cursor(cursor_visible);
+    pointer_refresh();
+    mutex_unlock(&lock);
 }
 
 void console_putc(char c)
 {
     if (!ready) return;
+    mutex_lock(&lock);
+    putc_locked(c);
+    pointer_refresh();
+    mutex_unlock(&lock);
+}
+
+static void putc_locked(char c)
+{
     draw_cursor(false);
     switch (c) {
     case '\n': cx = 0; cy++; break;
@@ -140,11 +229,23 @@ void console_putc(char c)
 
 void console_write(const char *s, size_t n)
 {
-    while (n--) console_putc(*s++);
+    if (!ready) return;
+    mutex_lock(&lock);
+    while (n--) putc_locked(*s++);
+    pointer_refresh();
+    mutex_unlock(&lock);
 }
 
 void console_set_color(uint32_t f, uint32_t b) { fg = f; bg = b; }
 void console_get_color(uint32_t *f, uint32_t *b) { *f = fg; *b = bg; }
-void console_set_cursor(bool visible) { cursor_visible = visible; draw_cursor(visible); }
+void console_set_cursor(bool visible)
+{
+    mutex_lock(&lock);
+    cursor_visible = visible;
+    draw_cursor(visible);
+    pointer_refresh();
+    mutex_unlock(&lock);
+}
+void console_screen_size(uint32_t *w, uint32_t *h) { *w = width; *h = height; }
 uint32_t console_cols(void) { return cols; }
 uint32_t console_rows(void) { return rows; }
